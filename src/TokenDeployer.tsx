@@ -255,9 +255,6 @@ View on Explorer: https://explorer.solana.com/tx/${signature}?cluster=devnet`;
       {activeTab === 'deploy' ? (
         <>
           <h2>Deploy SPL Token</h2>
-          <p style={{ fontSize: '14px', color: '#666', marginBottom: '20px' }}>
-            Create SPL tokens with metadata on Solana Devnet
-          </p>
           
           <div style={{ marginBottom: '15px' }}>
             <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>

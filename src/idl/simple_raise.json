@@ -98,24 +98,7 @@
         },
         {
           "name": "sale",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  97,
-                  108,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "seller"
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "mint"
@@ -202,6 +185,10 @@
         {
           "name": "price_per_token",
           "type": "u64"
+        },
+        {
+          "name": "nonce",
+          "type": "u8"
         }
       ]
     },
@@ -232,7 +219,32 @@
         243,
         155
       ],
-      "accounts": [],
+      "accounts": [
+        {
+          "name": "sale",
+          "writable": true
+        },
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "sale_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "seller_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
       "args": []
     }
   ],
@@ -261,6 +273,16 @@
       "code": 6001,
       "name": "InsufficientTokens",
       "msg": "Insufficient tokens available for purchase"
+    },
+    {
+      "code": 6002,
+      "name": "UnauthorizedWithdrawal",
+      "msg": "Unauthorized withdrawal"
+    },
+    {
+      "code": 6003,
+      "name": "NoUsdcToWithdraw",
+      "msg": "No USDC to withdraw"
     }
   ],
   "types": [
@@ -295,6 +317,10 @@
           },
           {
             "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "nonce",
             "type": "u8"
           }
         ]
