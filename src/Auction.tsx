@@ -1,21 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { AnchorProvider, BN, Program } from "@coral-xyz/anchor";
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
-
-import auctionIDL from "./idl/auction_program.json";
 import {
+  TOKEN_PROGRAM_ID,
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
 } from "@solana/spl-token";
 
-/** ===== Constants ===== */
+// ==== IDL ====
+import auctionIDL from "./idl/auction_program.json";
+
+// ======= CONSTS =======
 const USDC_MINT_DEVNET = new PublicKey(
   "Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr"
 );
+const RENT_SYSVAR = new PublicKey(
+  "SysvarRent111111111111111111111111111111111"
+);
 
-/** ===== Helpers ===== */
+// ======= HELPERS =======
 function parseUnits(amountStr: string, decimals: number): BN {
   const [wholeRaw, fracRaw = ""] = (amountStr || "0").split(".");
   const whole = wholeRaw.replace(/^0+/, "") || "0";
@@ -31,6 +35,72 @@ function formatUnits(bn: BN, decimals: number): string {
   const tail = s.slice(s.length - decimals);
   return `${head}.${tail}`.replace(/\.$/, "");
 }
+async function fetchMintDecimals(connection: any, mint: PublicKey) {
+  const info = await connection.getParsedAccountInfo(mint);
+  const parsed = (info.value?.data as any)?.parsed;
+  const decimals: number | undefined = parsed?.info?.decimals;
+  if (typeof decimals !== "number")
+    throw new Error("Unable to read mint decimals");
+  return decimals;
+}
+function bnToHuman(bn: BN, decimals: number) {
+  return formatUnits(bn, decimals);
+}
+function logAccounts(label: string, rec: Record<string, any>) {
+  console.group(label);
+  Object.entries(rec).forEach(([k, v]) => {
+    try {
+      if (v instanceof PublicKey) {
+        console.log(k, (v as PublicKey).toBase58());
+      } else {
+        console.log(k, v);
+      }
+    } catch {
+      console.log(k, v);
+    }
+  });
+  console.groupEnd();
+}
+async function withFailureLogs<T>(
+  fn: () => Promise<T>,
+  ctx?: {
+    connection: any;
+    publicKey?: PublicKey | null;
+    build?: () => Promise<Transaction>;
+  }
+) {
+  try {
+    return await fn();
+  } catch (e: any) {
+    console.error("TX failed:", e);
+    if (e.logs) {
+      console.group("Program logs");
+      e.logs.forEach((l: string) => console.log(l));
+      console.groupEnd();
+    }
+    // optional simulation for richer logs
+    if (ctx?.build && ctx.publicKey) {
+      try {
+        const tx = await ctx.build();
+        tx.feePayer = ctx.publicKey!;
+        tx.recentBlockhash = (
+          await ctx.connection.getLatestBlockhash()
+        ).blockhash;
+        const sim = await ctx.connection.simulateTransaction(tx, {
+          sigVerify: false,
+        });
+        console.group("simulateTransaction logs");
+        (sim.value.logs || []).forEach((l) => console.log(l));
+        console.groupEnd();
+      } catch (simErr) {
+        console.warn("simulateTransaction failed", simErr);
+      }
+    }
+    throw e;
+  }
+}
+
+// PDAs
 function deriveAuctionPda(
   creator: PublicKey,
   auctionId: BN,
@@ -43,24 +113,6 @@ function deriveAuctionPda(
     programId
   )[0];
 }
-async function fetchMintDecimals(connection: any, mint: PublicKey) {
-  const info = await connection.getParsedAccountInfo(mint);
-  const parsed = (info.value?.data as any)?.parsed;
-  const decimals: number | undefined = parsed?.info?.decimals;
-  if (typeof decimals !== "number")
-    throw new Error("Unable to read mint decimals");
-  return decimals;
-}
-const toUSDC = (s: string) => parseUnits(s || "0", 6);
-
-// ProgramState PDA (seed = "program_state")
-function programStatePda(programId: PublicKey) {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("program_state")],
-    programId
-  )[0];
-}
-
 function auctionTokenPda(auctionPda: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("auction_tokens"), auctionPda.toBuffer()],
@@ -73,42 +125,87 @@ function auctionUsdcPda(auctionPda: PublicKey, programId: PublicKey) {
     programId
   )[0];
 }
-
-// Creates the ATA if it doesn't exist. Owner may be a PDA (off-curve).
-async function ensureAtaIx(
-  connection: any,
-  mint: PublicKey,
-  owner: PublicKey,
-  payer: PublicKey
-): Promise<{
-  ata: PublicKey;
-  ix: import("@solana/web3.js").TransactionInstruction | null;
-}> {
-  const ata = await getAssociatedTokenAddress(mint, owner, true);
-  const info = await connection.getAccountInfo(ata);
-  if (!info) {
-    const ix = createAssociatedTokenAccountInstruction(payer, ata, owner, mint);
-    return { ata, ix };
-  }
-  return { ata, ix: null };
+function bidderAccountPda(
+  buyer: PublicKey,
+  auctionPda: PublicKey,
+  programId: PublicKey
+) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("bidder"), buyer.toBuffer(), auctionPda.toBuffer()],
+    programId
+  )[0];
+}
+function programStatePda(programId: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("program_state")],
+    programId
+  );
+}
+function cliffAccountPda(
+  auctionPda: PublicKey,
+  index: number,
+  programId: PublicKey
+) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("cliff"), auctionPda.toBuffer(), Buffer.from([index & 0xff])],
+    programId
+  )[0];
+}
+function cliffUsdcPda(
+  auctionPda: PublicKey,
+  index: number,
+  programId: PublicKey
+) {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("cliff_usdc"),
+      auctionPda.toBuffer(),
+      Buffer.from([index & 0xff]),
+    ],
+    programId
+  )[0];
+}
+function cliffTokenPda(
+  auctionPda: PublicKey,
+  index: number,
+  programId: PublicKey
+) {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("cliff_token"),
+      auctionPda.toBuffer(),
+      Buffer.from([index & 0xff]),
+    ],
+    programId
+  )[0];
 }
 
-/** ===== Component ===== */
+// ======= COMPONENT =======
 export default function Auction() {
   const { connection } = useConnection();
   const { publicKey, signTransaction } = useWallet();
 
-  // Inputs
-  const [mintStr, setMintStr] = useState("");
-  const [auctionIdStr, setAuctionIdStr] = useState("0");
-  const [tokenAmountStr, setTokenAmountStr] = useState("1000");
-  const [minPriceUSDC, setMinPriceUSDC] = useState("0.01");
-  const [maxPriceUSDC, setMaxPriceUSDC] = useState("2");
+  // Defaults: your mint
+  const [mintStr, setMintStr] = useState(
+    "7nBpXyTZjs1h1ci3H59WsiKFGBYokfSJx8ff8ZmocvDg"
+  );
+  const [auctionIdStr, setAuctionIdStr] = useState("1");
+  const [tokenAmountStr, setTokenAmountStr] = useState("100000"); // tokens to sell
+  const [tokenPriceUSDC, setTokenPriceUSDC] = useState("1"); // price per token (in USDC)
+
+  const [startTime, setStartTime] = useState<string>(() =>
+    Math.floor(Date.now() / 1000).toString()
+  );
+  const [endTime, setEndTime] = useState<string>(() =>
+    (Math.floor(Date.now() / 1000) + 3600).toString()
+  );
+  const [cliffCountStr, setCliffCountStr] = useState("3");
+  const [cliffDurationSecStr, setCliffDurationSecStr] = useState("3600");
 
   // UI state
   const [decimals, setDecimals] = useState<number | null>(null);
   const [auctionInfo, setAuctionInfo] = useState<any>(null);
-  const [buyAmountStr, setBuyAmountStr] = useState("1");
+  const [buyAmountStr, setBuyAmountStr] = useState("10");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>("");
 
@@ -123,29 +220,20 @@ export default function Auction() {
     const provider = new AnchorProvider(connection, wallet as any, {
       commitment: "confirmed",
     });
-    // const prog = new Program(auctionIDL as any, provider);
-    // console.log("Program ID from IDL:", (auctionIDL as any).address);
-    // console.log("Program ID from Program object:", prog.programId.toBase58());
-
-    // @ts-ignore (IDL contains "address")
+    // @ts-ignore
     return new Program(auctionIDL as any, provider);
   }, [connection, publicKey, signTransaction]);
-
-  console.log("RPC:", (connection as any)._rpcEndpoint);
 
   const programId = useMemo(() => {
     try {
       // @ts-ignore
-      const addr = new PublicKey((auctionIDL as any).address);
-      //   console.log("ProgramId from IDL useMemo:", addr.toBase58());
-      return addr;
+      return new PublicKey((auctionIDL as any).address);
     } catch (e) {
       console.error("Failed to parse program ID from IDL", e);
       return null;
     }
   }, []);
 
-  // Derived values
   const mint = useMemo(() => {
     try {
       return mintStr ? new PublicKey(mintStr) : null;
@@ -180,7 +268,6 @@ export default function Auction() {
     })();
   }, [connection, mint]);
 
-  /** ===== Actions ===== */
   const refreshAuction = async () => {
     if (!program || !auctionPda) return;
     try {
@@ -194,65 +281,23 @@ export default function Auction() {
     }
   };
 
-  // one-time program init (stores USDC mint in ProgramState)
-  //   const initProgram = async () => {
-  //     if (!publicKey || !program || !programId) {
-  //       setResult("Connect wallet first.");
-  //       return;
-  //     }
-  //     setLoading(true);
-  //     setResult("");
-  //     // console.log("Using programId:", programId?.toBase58());
-  //     try {
-  //       const statePda = programStatePda(programId);
-  //       const tx = await program.methods
-  //         .initialize()
-  //         .accounts({
-  //           programState: statePda,
-  //           authority: publicKey,
-  //           usdcMint: USDC_MINT_DEVNET,
-  //           systemProgram: SystemProgram.programId,
-  //           rent: new PublicKey("SysvarRent111111111111111111111111111111111"),
-  //         })
-  //         .rpc();
-  //       setResult(`Program initialized.\nTx: ${tx}`);
-  //     } catch (e: any) {
-  //       setResult("Error: " + e.message);
-  //     } finally {
-  //       setLoading(false);
-  //     }
-  //   };
-  // derive the PDA for program state
-  function programStatePda(programId: PublicKey): [PublicKey, number] {
-    return PublicKey.findProgramAddressSync(
-      [Buffer.from("program_state")],
-      programId
-    );
-  }
-
+  // -------- initialize ----------
   const initProgram = async () => {
     if (!publicKey || !program || !programId) {
       setResult("Connect wallet first.");
       return;
     }
-
     setLoading(true);
     setResult("");
-
     try {
       const [statePda] = programStatePda(programId);
-
-      // check if PDA exists on chain
-      const existingAccount = await program.provider.connection.getAccountInfo(
+      const existing = await program.provider.connection.getAccountInfo(
         statePda
       );
-
-      if (existingAccount) {
+      if (existing) {
         setResult(`Program already initialized at: ${statePda.toBase58()}`);
-        return; // don’t run initialize again
+        return;
       }
-
-      // run initialize only if missing
       const tx = await program.methods
         .initialize()
         .accounts({
@@ -260,10 +305,9 @@ export default function Auction() {
           authority: publicKey,
           usdcMint: USDC_MINT_DEVNET,
           systemProgram: SystemProgram.programId,
-          rent: new PublicKey("SysvarRent111111111111111111111111111111111"),
+          rent: RENT_SYSVAR,
         })
         .rpc();
-
       setResult(
         `Program initialized.\nTx: ${tx}\nState PDA: ${statePda.toBase58()}`
       );
@@ -274,115 +318,7 @@ export default function Auction() {
     }
   };
 
-  //   const createAuction = async () => {
-  //     if (!publicKey || !program || !mint || decimals == null || !auctionPda) {
-  //       setResult("Connect wallet, set Mint, and ensure decimals were read.");
-  //       return;
-  //     }
-
-  //     setLoading(true);
-  //     setResult("");
-  //     // console.log("Using programId:", programId?.toBase58());
-
-  //     try {
-  //       const creatorTokenAccount = await getAssociatedTokenAddress(
-  //         mint,
-  //         publicKey
-  //       );
-
-  //       const tokenAmountU64 = parseUnits(tokenAmountStr, decimals);
-  //       const minPriceU64 = toUSDC(minPriceUSDC);
-  //       const maxPriceU64 = toUSDC(maxPriceUSDC);
-
-  //       console.log(
-  //         "id:",
-  //         auctionId,
-  //         "Token Amount:",
-  //         tokenAmountU64,
-  //         "min price:",
-  //         minPriceU64,
-  //         "max price:",
-  //         maxPriceU64
-  //       );
-
-  //       const txSig = await program.methods
-  //         .createAuction(auctionId, tokenAmountU64, minPriceU64, maxPriceU64)
-  //         .accounts({
-  //           auctionCreator: publicKey,
-  //           auction: auctionPda,
-  //           creatorTokenAccount,
-  //           tokenMint: mint,
-  //           tokenProgram: new PublicKey(
-  //             "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-  //           ),
-  //           systemProgram: SystemProgram.programId,
-  //           rent: new PublicKey("SysvarRent111111111111111111111111111111111"),
-  //         })
-  //         .rpc();
-
-  //       setResult(
-  //         `Auction created\n\nTx: ${txSig}\nAuction PDA: ${auctionPda.toBase58()}\nExplorer: https://explorer.solana.com/tx/${txSig}?cluster=devnet`
-  //       );
-  //       await refreshAuction();
-  //     } catch (e: any) {
-  //       setResult("Error: " + e.message);
-  //     } finally {
-  //       setLoading(false);
-  //     }
-  //   };
-
-  //   const createAuction = async () => {
-  //     if (!publicKey || !program || !mint || decimals == null || !auctionPda) {
-  //       setResult("Connect wallet, set Mint, and ensure decimals were read.");
-  //       return;
-  //     }
-
-  //     setLoading(true);
-  //     setResult("");
-
-  //     try {
-  //       const creatorTokenAccount = await getAssociatedTokenAddress(
-  //         mint,
-  //         publicKey
-  //       );
-
-  //       // Ensure the AUCTION PDA’s vault ATA exists (owner = auctionPda)
-  //       const { ata: auctionTokenAccount, ix: createVaultAtaIx } =
-  //         await ensureAtaIx(connection, mint, auctionPda, publicKey);
-
-  //       const tokenAmountU64 = parseUnits(tokenAmountStr, decimals);
-  //       const minPriceU64 = toUSDC(minPriceUSDC);
-  //       const maxPriceU64 = toUSDC(maxPriceUSDC);
-
-  //       const method = program.methods
-  //         .createAuction(auctionId, tokenAmountU64, minPriceU64, maxPriceU64)
-  //         .accounts({
-  //           auctionCreator: publicKey,
-  //           auction: auctionPda,
-  //           creatorTokenAccount,
-  //           auctionTokenAccount, // ✅ pass the vault ATA
-  //           tokenMint: mint,
-  //           tokenProgram: new PublicKey(
-  //             "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-  //           ),
-  //           systemProgram: SystemProgram.programId,
-  //           rent: new PublicKey("SysvarRent111111111111111111111111111111111"),
-  //         });
-
-  //       // If ATA didn’t exist, create it in the same tx as a pre-instruction
-  //       if (createVaultAtaIx) method.preInstructions([createVaultAtaIx]);
-
-  //       const txSig = await method.rpc();
-  //       setResult(
-  //         `Auction created\n\nTx: ${txSig}\nAuction PDA: ${auctionPda.toBase58()}\nExplorer: https://explorer.solana.com/tx/${txSig}?cluster=devnet`
-  //       );
-  //       await refreshAuction();
-  //     } catch (e: any) {
-  //       setResult("Error: " + e.message);
-  //     } finally {
-  //       setLoading(false);
-  //     }
-  //   };
+  // -------- create_auction ----------
   const createAuction = async () => {
     if (
       !publicKey ||
@@ -405,27 +341,92 @@ export default function Auction() {
       const auctionTokenAccount = auctionTokenPda(auctionPda, programId);
       const auctionUsdcAccount = auctionUsdcPda(auctionPda, programId);
 
-      const tokenAmountU64 = parseUnits(tokenAmountStr, decimals);
-      const minPriceU64 = toUSDC(minPriceUSDC);
-      const maxPriceU64 = toUSDC(maxPriceUSDC);
+      // resolve decimals explicitly
+      const usdcDecimals = await fetchMintDecimals(
+        connection,
+        USDC_MINT_DEVNET
+      );
 
-      const txSig = await program.methods
-        .createAuction(auctionId, tokenAmountU64, minPriceU64, maxPriceU64)
+      const tokenAmountU64 = parseUnits(tokenAmountStr, decimals);
+      // const tokenPriceU64 = parseUnits(tokenPriceUSDC, usdcDecimals);
+      const tokenPriceU64 = new BN(1); // == $0.000001 per token
+      const start = new BN(parseInt(startTime, 10));
+      const end = new BN(parseInt(endTime, 10));
+      const cliffCount = Number(cliffCountStr) & 0xff;
+      const cliffDuration = new BN(parseInt(cliffDurationSecStr, 10));
+
+      // sanity preview
+      const totalUsdcAtPrice = tokenAmountU64
+        .mul(tokenPriceU64)
+        .div(new BN(10).pow(new BN(decimals)));
+
+      console.group("createAuction payload");
+      console.log("programId", program.programId.toBase58());
+      console.log("auctionId (u64 raw)", auctionId.toString());
+      console.log("token decimals", decimals);
+      console.log("USDC decimals", usdcDecimals);
+
+      console.log("tokenAmount raw", tokenAmountU64.toString());
+      console.log("tokenAmount human", bnToHuman(tokenAmountU64, decimals));
+
+      console.log("tokenPrice raw (micro-USDC)", tokenPriceU64.toString());
+      console.log(
+        "tokenPrice human (USDC)",
+        bnToHuman(tokenPriceU64, usdcDecimals)
+      );
+
+      console.log(
+        "totalUsdcAtPrice raw",
+        totalUsdcAtPrice.toString(),
+        "human",
+        bnToHuman(totalUsdcAtPrice, usdcDecimals)
+      );
+
+      logAccounts("accounts", {
+        auctionCreator: publicKey,
+        auction: auctionPda,
+        creatorTokenAccount,
+        auctionTokenAccount,
+        auctionUsdcAccount,
+        tokenMint: mint,
+        usdcMint: USDC_MINT_DEVNET,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      });
+      console.groupEnd();
+
+      const method = program.methods
+        .createAuction(
+          auctionId,
+          tokenAmountU64,
+          tokenPriceU64,
+          start,
+          end,
+          cliffCount,
+          cliffDuration
+        )
         .accounts({
           auctionCreator: publicKey,
           auction: auctionPda,
           creatorTokenAccount,
-          auctionTokenAccount, // PDA (created by program)
-          auctionUsdcAccount, // PDA (created by program)
+          auctionTokenAccount,
+          auctionUsdcAccount,
           tokenMint: mint,
           usdcMint: USDC_MINT_DEVNET,
-          tokenProgram: new PublicKey(
-            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-          ),
+          tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
-          rent: new PublicKey("SysvarRent111111111111111111111111111111111"),
-        })
-        .rpc();
+          rent: RENT_SYSVAR,
+        });
+
+      const txSig = await withFailureLogs(() => method.rpc(), {
+        connection,
+        publicKey,
+        build: async () => {
+          const ixs = await method.instructions();
+          const tx = new Transaction().add(...ixs);
+          return tx;
+        },
+      });
 
       setResult(
         `Auction created\n\nTx: ${txSig}\nAuction PDA: ${auctionPda.toBase58()}`
@@ -438,107 +439,7 @@ export default function Auction() {
     }
   };
 
-  //   const buyTokens = async () => {
-  //     if (!publicKey || !program || !auctionPda || !mint || decimals == null) {
-  //       setResult("Connect wallet and load an existing auction.");
-  //       return;
-  //     }
-
-  //     setLoading(true);
-  //     setResult("");
-
-  //     try {
-  //       const buyerTokenAccount = await getAssociatedTokenAddress(
-  //         mint,
-  //         publicKey
-  //       );
-  //       const auctionTokenAccount = await getAssociatedTokenAddress(
-  //         mint,
-  //         auctionPda,
-  //         true // off-curve owner
-  //       );
-
-  //       const amountU64 = parseUnits(buyAmountStr, decimals);
-
-  //       const txSig = await program.methods
-  //         .buyTokens(amountU64)
-  //         .accounts({
-  //           buyer: publicKey,
-  //           auction: auctionPda,
-  //           buyerTokenAccount,
-  //           auctionTokenAccount,
-  //           usdcMint: USDC_MINT_DEVNET, // required in your new IDL
-  //           auctionCreator: publicKey, // demo: you're both creator & buyer; replace if buying someone else's
-  //           tokenMint: mint,
-  //           tokenProgram: new PublicKey(
-  //             "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-  //           ),
-  //           systemProgram: SystemProgram.programId,
-  //         })
-  //         .rpc();
-
-  //       setResult(
-  //         `Bought ${buyAmountStr} tokens.\n\nTx: ${txSig}\nExplorer: https://explorer.solana.com/tx/${txSig}?cluster=devnet`
-  //       );
-  //       await refreshAuction();
-  //     } catch (e: any) {
-  //       setResult("Error: " + e.message);
-  //     } finally {
-  //       setLoading(false);
-  //     }
-  //   };
-
-  //   const buyTokens = async () => {
-  //     if (!publicKey || !program || !auctionPda || !mint || decimals == null) {
-  //       setResult("Connect wallet and load an existing auction.");
-  //       return;
-  //     }
-
-  //     setLoading(true);
-  //     setResult("");
-
-  //     try {
-  //       // Ensure buyer’s ATA exists (owner = user wallet)
-  //       const { ata: buyerTokenAccount, ix: createBuyerAtaIx } =
-  //         await ensureAtaIx(connection, mint, publicKey, publicKey);
-
-  //       // Ensure auction vault ATA exists (owner = auction PDA)
-  //       const { ata: auctionTokenAccount, ix: createVaultAtaIx } =
-  //         await ensureAtaIx(connection, mint, auctionPda, publicKey);
-
-  //       const amountU64 = parseUnits(buyAmountStr, decimals);
-
-  //       const method = program.methods.buyTokens(amountU64).accounts({
-  //         buyer: publicKey,
-  //         auction: auctionPda,
-  //         buyerTokenAccount,
-  //         auctionTokenAccount,
-  //         usdcMint: USDC_MINT_DEVNET, // (still in your IDL)
-  //         auctionCreator: publicKey, // (adjust if needed)
-  //         tokenMint: mint,
-  //         tokenProgram: new PublicKey(
-  //           "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-  //         ),
-  //         systemProgram: SystemProgram.programId,
-  //       });
-
-  //       const preIxs = [];
-  //       if (createBuyerAtaIx) preIxs.push(createBuyerAtaIx);
-  //       if (createVaultAtaIx) preIxs.push(createVaultAtaIx);
-  //       if (preIxs.length) method.preInstructions(preIxs);
-
-  //       const txSig = await method.rpc();
-  //       setResult(
-  //         `Bought ${buyAmountStr} tokens.\n\nTx: ${txSig}\nExplorer: https://explorer.solana.com/tx/${txSig}?cluster=devnet`
-  //       );
-  //       await refreshAuction();
-  //     } catch (e: any) {
-  //       setResult("Error: " + e.message);
-  //     } finally {
-  //       setLoading(false);
-  //     }
-  //   };
-
+  // -------- buy_tokens ----------
   const buyTokens = async () => {
     if (
       !publicKey ||
@@ -554,7 +455,6 @@ export default function Auction() {
     setLoading(true);
     setResult("");
     try {
-      // buyer’s ATAs (create if missing)
       const buyerTokenAccount = await getAssociatedTokenAddress(
         mint,
         publicKey
@@ -563,10 +463,9 @@ export default function Auction() {
         USDC_MINT_DEVNET,
         publicKey
       );
-
       const preIxs: any[] = [];
-      const info1 = await connection.getAccountInfo(buyerTokenAccount);
-      if (!info1)
+
+      if (!(await connection.getAccountInfo(buyerTokenAccount))) {
         preIxs.push(
           createAssociatedTokenAccountInstruction(
             publicKey,
@@ -575,8 +474,8 @@ export default function Auction() {
             mint
           )
         );
-      const info2 = await connection.getAccountInfo(buyerUsdcAccount);
-      if (!info2)
+      }
+      if (!(await connection.getAccountInfo(buyerUsdcAccount))) {
         preIxs.push(
           createAssociatedTokenAccountInstruction(
             publicKey,
@@ -585,32 +484,61 @@ export default function Auction() {
             USDC_MINT_DEVNET
           )
         );
+      }
 
-      // auction vault PDAs
       const auctionTokenAccount = auctionTokenPda(auctionPda, programId);
       const auctionUsdcAccount = auctionUsdcPda(auctionPda, programId);
+      const bidderPda = bidderAccountPda(publicKey, auctionPda, programId);
 
       const amountU64 = parseUnits(buyAmountStr, decimals);
+
+      console.group("buyTokens payload");
+      console.log(
+        "amount raw",
+        amountU64.toString(),
+        "human",
+        bnToHuman(amountU64, decimals)
+      );
+      logAccounts("accounts", {
+        buyer: publicKey,
+        auction: auctionPda,
+        bidderAccount: bidderPda,
+        buyerTokenAccount,
+        buyerUsdcAccount,
+        auctionTokenAccount,
+        auctionUsdcAccount,
+        tokenMint: mint,
+        usdcMint: USDC_MINT_DEVNET,
+      });
+      console.groupEnd();
 
       const method = program.methods.buyTokens(amountU64).accounts({
         buyer: publicKey,
         auction: auctionPda,
+        bidderAccount: bidderPda,
         buyerTokenAccount,
-        auctionTokenAccount, // PDA
-        buyerUsdcAccount, // buyer USDC ATA
-        auctionUsdcAccount, // PDA
+        auctionTokenAccount,
+        buyerUsdcAccount,
+        auctionUsdcAccount,
         usdcMint: USDC_MINT_DEVNET,
-        auctionCreator: publicKey, // replace if the creator is different
         tokenMint: mint,
-        tokenProgram: new PublicKey(
-          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        ),
+        tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
+        rent: RENT_SYSVAR,
       });
 
       if (preIxs.length) method.preInstructions(preIxs);
 
-      const txSig = await method.rpc();
+      const txSig = await withFailureLogs(() => method.rpc(), {
+        connection,
+        publicKey,
+        build: async () => {
+          const ixs = await method.instructions();
+          const tx = new Transaction().add(...ixs);
+          return tx;
+        },
+      });
+
       setResult(`Bought ${buyAmountStr} tokens.\n\nTx: ${txSig}`);
       await refreshAuction();
     } catch (e: any) {
@@ -620,6 +548,7 @@ export default function Auction() {
     }
   };
 
+  // -------- end_auction ----------
   const endAuction = async () => {
     if (!publicKey || !program || !auctionPda || !mint || !programId) {
       setResult("Connect wallet and load an existing auction.");
@@ -627,40 +556,7 @@ export default function Auction() {
     }
     setLoading(true);
     setResult("");
-    console.log("TOKEN_PROGRAM_ID:", TOKEN_PROGRAM_ID.toBase58());
-
-    // helpers you already have:
-    const auctionTokenAccount = auctionTokenPda(auctionPda, programId);
-    const auctionUsdcAccount = auctionUsdcPda(auctionPda, programId);
-
-    console.log("ProgramId (IDL):", programId.toBase58());
-    console.log("Auction PDA:", auctionPda.toBase58());
-    console.log("Vault token PDA:", auctionTokenAccount.toBase58());
-    console.log("Vault USDC  PDA:", auctionUsdcAccount.toBase58());
-
-    const iTok = await connection.getParsedAccountInfo(auctionTokenAccount);
-    const iUsdc = await connection.getParsedAccountInfo(auctionUsdcAccount);
-
-    console.log(
-      "vault token exists?",
-      !!iTok.value,
-      iTok.value?.owner?.toBase58()
-    );
-    console.log(
-      "vault usdc  exists?",
-      !!iUsdc.value,
-      iUsdc.value?.owner?.toBase58()
-    );
-
-    // If exists, also check parsed fields:
-    const vt = (iTok.value?.data as any)?.parsed?.info;
-    const vu = (iUsdc.value?.data as any)?.parsed?.info;
-
-    console.log("vault token owner:", vt?.owner, "mint:", vt?.mint);
-    console.log("vault usdc  owner:", vu?.owner, "mint:", vu?.mint);
-
     try {
-      // creator’s ATAs (receiver)
       const creatorTokenAccount = await getAssociatedTokenAddress(
         mint,
         publicKey
@@ -669,12 +565,9 @@ export default function Auction() {
         USDC_MINT_DEVNET,
         publicKey
       );
+      const auctionTokenAccount = auctionTokenPda(auctionPda, programId);
+      const auctionUsdcAccount = auctionUsdcPda(auctionPda, programId);
 
-      // auction vault PDAs (must match seeds in program)
-      const auctionTokenAccount = auctionTokenPda(auctionPda, programId); // seeds ["auction_tokens", auctionPda]
-      const auctionUsdcAccount = auctionUsdcPda(auctionPda, programId); // seeds ["auction_usdc",  auctionPda]
-
-      // (optional) ensure creator has USDC ATA
       const preIxs: any[] = [];
       if (!(await connection.getAccountInfo(creatorUsdcAccount))) {
         preIxs.push(
@@ -687,21 +580,41 @@ export default function Auction() {
         );
       }
 
+      console.group("endAuction payload");
+      logAccounts("accounts", {
+        auction: auctionPda,
+        signer: publicKey,
+        creatorTokenAccount,
+        creatorUsdcAccount,
+        usdcAccount: auctionUsdcAccount,
+        auctionTokenAccount,
+      });
+      console.groupEnd();
+
       const method = program.methods.endAuction().accounts({
         auction: auctionPda,
-        auctionCreator: publicKey,
+        signer: publicKey, // IDL: signer
         creatorTokenAccount,
-        creatorUsdcAccount, // NEW in program
-        usdcAccount: auctionUsdcAccount, // PDA vault (NOT ATA)
-        auctionTokenAccount, // PDA vault (NOT ATA)
-        tokenProgram: new PublicKey(
-          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        ),
+        creatorUsdcAccount,
+        usdcAccount: auctionUsdcAccount,
+        auctionTokenAccount,
+        usdcMint: USDC_MINT_DEVNET,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: RENT_SYSVAR,
       });
-
       if (preIxs.length) method.preInstructions(preIxs);
 
-      const tx = await method.rpc();
+      const tx = await withFailureLogs(() => method.rpc(), {
+        connection,
+        publicKey,
+        build: async () => {
+          const ixs = await method.instructions();
+          const tx = new Transaction().add(...ixs);
+          return tx;
+        },
+      });
+
       setResult(`Auction ended.\nTx: ${tx}`);
       await refreshAuction();
     } catch (e: any) {
@@ -711,7 +624,67 @@ export default function Auction() {
     }
   };
 
-  /** ===== Render ===== */
+  // -------- create_single_cliff_account ----------
+  const createCliff = async (index = 0) => {
+    if (!publicKey || !program || !auctionPda || !programId || !mint) {
+      setResult("Connect wallet and load an ended auction.");
+      return;
+    }
+    setLoading(true);
+    setResult("");
+    try {
+      const auctionUsdcAccount = auctionUsdcPda(auctionPda, programId);
+      const cliffAccount = cliffAccountPda(auctionPda, index, programId);
+      const cliffUsdc = cliffUsdcPda(auctionPda, index, programId);
+      const cliffToken = cliffTokenPda(auctionPda, index, programId);
+
+      console.group("createSingleCliffAccount payload");
+      console.log("cliffIndex", index);
+      logAccounts("accounts", {
+        auctionCreator: publicKey,
+        auction: auctionPda,
+        auctionUsdcAccount,
+        cliffAccount,
+        cliffUsdcAccount: cliffUsdc,
+        cliffTokenAccount: cliffToken,
+        usdcMint: USDC_MINT_DEVNET,
+        tokenMint: mint,
+      });
+      console.groupEnd();
+
+      const method = program.methods.createSingleCliffAccount(index).accounts({
+        auctionCreator: publicKey,
+        auction: auctionPda,
+        auctionUsdcAccount,
+        cliffAccount,
+        cliffUsdcAccount: cliffUsdc,
+        cliffTokenAccount: cliffToken,
+        usdcMint: USDC_MINT_DEVNET,
+        tokenMint: mint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: RENT_SYSVAR,
+      });
+
+      const tx = await withFailureLogs(() => method.rpc(), {
+        connection,
+        publicKey,
+        build: async () => {
+          const ixs = await method.instructions();
+          const tx = new Transaction().add(...ixs);
+          return tx;
+        },
+      });
+
+      setResult(`Cliff #${index} created.\nTx: ${tx}`);
+    } catch (e: any) {
+      setResult("Error: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ============ UI ============
   const prettyAuction = () => {
     if (!auctionInfo || decimals == null) return null;
     try {
@@ -723,19 +696,14 @@ export default function Auction() {
       const tokensSold = formatUnits(tokensSoldBn, decimals);
       const remaining = formatUnits(remainingBn, decimals);
 
-      const minPrice = auctionInfo.minPrice as BN;
-      const maxPrice = auctionInfo.maxPrice as BN;
-      const currentPrice = auctionInfo.currentPrice as BN;
+      const tokenPrice = auctionInfo.tokenPrice as BN;
       const endTimeBn = auctionInfo.endTime as BN | undefined;
 
-      // % sold (guard divide-by-zero)
       const pctSold = tokenAmountBn.isZero()
         ? 0
         : Math.min(
             100,
-            Number(
-              tokensSoldBn.muln(10000).div(tokenAmountBn).toNumber() / 100 // two decimals
-            )
+            Number(tokensSoldBn.muln(10000).div(tokenAmountBn).toNumber() / 100)
           );
 
       return (
@@ -762,7 +730,6 @@ export default function Auction() {
             <strong>Remaining:</strong> {remaining}
           </p>
 
-          {/* simple progress bar */}
           <div style={{ margin: "6px 0 12px 0" }}>
             <div
               style={{
@@ -784,16 +751,8 @@ export default function Auction() {
           </div>
 
           <p>
-            <strong>Min Price / Token:</strong>{" "}
-            {Number(formatUnits(minPrice, 6))} USDC
-          </p>
-          <p>
-            <strong>Max Price / Token:</strong>{" "}
-            {Number(formatUnits(maxPrice, 6))} USDC
-          </p>
-          <p>
-            <strong>Current Price / Token:</strong>{" "}
-            {Number(formatUnits(currentPrice, 6))} USDC
+            <strong>Price / Token:</strong> {Number(formatUnits(tokenPrice, 6))}{" "}
+            USDC
           </p>
 
           {endTimeBn && (
@@ -805,6 +764,13 @@ export default function Auction() {
           <p>
             <strong>Active:</strong> {auctionInfo.isActive ? "Yes" : "No"}
           </p>
+          <p>
+            <strong>Cliffs:</strong> {auctionInfo.cliffCount}
+          </p>
+          <p>
+            <strong>Cliff Duration (sec):</strong>{" "}
+            {auctionInfo.cliffDuration?.toString?.()}
+          </p>
         </div>
       );
     } catch {
@@ -813,7 +779,7 @@ export default function Auction() {
   };
 
   return (
-    <div style={{ maxWidth: 520 }}>
+    <div style={{ maxWidth: 560 }}>
       <h2>Auction</h2>
 
       <div style={{ marginBottom: 8 }}>
@@ -880,74 +846,106 @@ export default function Auction() {
           />
         </div>
 
-        <div style={{ gridColumn: "span 2" }}>
+        <div>
           <label
-            style={{
-              display: "block",
-              fontWeight: "bold",
-              marginBottom: 4,
-            }}
+            style={{ display: "block", fontWeight: "bold", marginBottom: 4 }}
           >
-            (USDC)
+            Price / Token (USDC)
           </label>
-
-          <div
+          <input
+            type="number"
+            value={tokenPriceUSDC}
+            onChange={(e) => setTokenPriceUSDC(e.target.value)}
+            min="0"
+            step="0.000001"
             style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 12,
+              width: "100%",
+              padding: 8,
+              border: "1px solid #ddd",
+              borderRadius: 4,
             }}
-          >
-            <div>
-              <label
-                style={{
-                  display: "block",
-                  fontWeight: "bold",
-                  marginBottom: 4,
-                }}
-              >
-                Min Price / Token
-              </label>
-              <input
-                type="number"
-                value={minPriceUSDC}
-                onChange={(e) => setMinPriceUSDC(e.target.value)}
-                min="0"
-                step="0.000001"
-                style={{
-                  width: "100%",
-                  padding: 8,
-                  border: "1px solid #ddd",
-                  borderRadius: 4,
-                }}
-              />
-            </div>
+          />
+        </div>
 
-            <div>
-              <label
-                style={{
-                  display: "block",
-                  fontWeight: "bold",
-                  marginBottom: 4,
-                }}
-              >
-                Max Price / Token
-              </label>
-              <input
-                type="number"
-                value={maxPriceUSDC}
-                onChange={(e) => setMaxPriceUSDC(e.target.value)}
-                min="0"
-                step="0.000001"
-                style={{
-                  width: "100%",
-                  padding: 8,
-                  border: "1px solid #ddd",
-                  borderRadius: 4,
-                }}
-              />
-            </div>
-          </div>
+        <div>
+          <label
+            style={{ display: "block", fontWeight: "bold", marginBottom: 4 }}
+          >
+            Start Time (unix sec)
+          </label>
+          <input
+            type="number"
+            value={startTime}
+            onChange={(e) => setStartTime(e.target.value)}
+            style={{
+              width: "100%",
+              padding: 8,
+              border: "1px solid #ddd",
+              borderRadius: 4,
+            }}
+          />
+        </div>
+
+        <div>
+          <label
+            style={{ display: "block", fontWeight: "bold", marginBottom: 4 }}
+          >
+            End Time (unix sec)
+          </label>
+          <input
+            type="number"
+            value={endTime}
+            onChange={(e) => setEndTime(e.target.value)}
+            style={{
+              width: "100%",
+              padding: 8,
+              border: "1px solid #ddd",
+              borderRadius: 4,
+            }}
+          />
+        </div>
+
+        <div>
+          <label
+            style={{ display: "block", fontWeight: "bold", marginBottom: 4 }}
+          >
+            Cliff Count (≤4)
+          </label>
+          <input
+            type="number"
+            value={cliffCountStr}
+            onChange={(e) => setCliffCountStr(e.target.value)}
+            min="1"
+            max="4"
+            step="1"
+            style={{
+              width: "100%",
+              padding: 8,
+              border: "1px solid #ddd",
+              borderRadius: 4,
+            }}
+          />
+        </div>
+
+        <div>
+          <label
+            style={{ display: "block", fontWeight: "bold", marginBottom: 4 }}
+          >
+            Cliff Duration (sec)
+          </label>
+          <input
+            type="number"
+            value={cliffDurationSecStr}
+            onChange={(e) => setCliffDurationSecStr(e.target.value)}
+            min="0"
+            step="1"
+            style={{
+              width: "100%",
+              padding: 8,
+              border: "1px solid #ddd",
+              borderRadius: 4,
+            }}
+          />
         </div>
       </div>
 
@@ -977,8 +975,7 @@ export default function Auction() {
             !mintStr ||
             !auctionIdStr ||
             !tokenAmountStr ||
-            !minPriceUSDC ||
-            !maxPriceUSDC
+            !tokenPriceUSDC
           }
           style={{
             padding: "10px 12px",
@@ -1031,7 +1028,7 @@ export default function Auction() {
               paddingTop: 12,
             }}
           >
-            <h4>Buy (Instant)</h4>
+            <h4>Buy (USDC ➜ Tokens)</h4>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
                 type="number"
@@ -1089,6 +1086,31 @@ export default function Auction() {
               {loading ? "Processing..." : "End Auction"}
             </button>
           </div>
+
+          <div
+            style={{
+              marginTop: 16,
+              borderTop: "1px solid #eee",
+              paddingTop: 12,
+            }}
+          >
+            <h4>Create Cliff (after end)</h4>
+            <button
+              onClick={() => createCliff(0)}
+              disabled={loading || !publicKey}
+              style={{
+                padding: "10px 12px",
+                backgroundColor: !loading && publicKey ? "#6f42c1" : "#ccc",
+                color: "white",
+                border: "none",
+                borderRadius: 4,
+                cursor: !loading && publicKey ? "pointer" : "not-allowed",
+                fontWeight: "bold",
+              }}
+            >
+              {loading ? "Processing..." : "Create Cliff #0"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -1105,7 +1127,7 @@ export default function Auction() {
             fontSize: 12,
             whiteSpace: "pre-wrap",
             wordBreak: "break-word",
-            color: "black", // always black text as requested
+            color: "black",
           }}
         >
           {result}

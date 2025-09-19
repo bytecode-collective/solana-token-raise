@@ -9,7 +9,6 @@
   "instructions": [
     {
       "name": "buy_tokens",
-      "docs": ["Buy tokens directly from auction"],
       "discriminator": [189, 21, 230, 133, 247, 2, 110, 42],
       "accounts": [
         {
@@ -20,6 +19,26 @@
         {
           "name": "auction",
           "writable": true
+        },
+        {
+          "name": "bidder_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [98, 105, 100, 100, 101, 114]
+              },
+              {
+                "kind": "account",
+                "path": "buyer"
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
         },
         {
           "name": "buyer_token_account",
@@ -41,10 +60,6 @@
           "name": "usdc_mint"
         },
         {
-          "name": "auction_creator",
-          "signer": true
-        },
-        {
           "name": "token_mint"
         },
         {
@@ -54,6 +69,10 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -62,6 +81,173 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "claim_cliff_usdc",
+      "discriminator": [17, 105, 230, 171, 39, 9, 181, 203],
+      "accounts": [
+        {
+          "name": "auction_creator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction"
+        },
+        {
+          "name": "cliff_account",
+          "writable": true
+        },
+        {
+          "name": "cliff_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "creator_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_refund",
+      "discriminator": [15, 16, 30, 161, 255, 228, 97, 60],
+      "accounts": [
+        {
+          "name": "bidder",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "writable": true
+        },
+        {
+          "name": "bidder_account",
+          "writable": true
+        },
+        {
+          "name": "bidder_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "auction_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_tokens",
+      "discriminator": [108, 216, 210, 231, 0, 212, 42, 64],
+      "accounts": [
+        {
+          "name": "bidder",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "writable": true
+        },
+        {
+          "name": "bidder_account",
+          "writable": true
+        },
+        {
+          "name": "bidder_token_account",
+          "writable": true
+        },
+        {
+          "name": "auction_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "clawback_usdc",
+      "discriminator": [24, 150, 244, 39, 249, 127, 205, 228],
+      "accounts": [
+        {
+          "name": "bidder",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "writable": true
+        },
+        {
+          "name": "auction_creator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "bidder_account",
+          "writable": true
+        },
+        {
+          "name": "bidder_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "auction_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "auction_token_account",
+          "writable": true
+        },
+        {
+          "name": "cliff_account",
+          "writable": true
+        },
+        {
+          "name": "cliff_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "cliff_token_account",
+          "writable": true
+        },
+        {
+          "name": "bidder_token_account",
+          "writable": true
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "token_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
     },
     {
       "name": "create_auction",
@@ -162,18 +348,132 @@
           "type": "u64"
         },
         {
-          "name": "min_price",
+          "name": "token_price",
           "type": "u64"
         },
         {
-          "name": "max_price",
-          "type": "u64"
+          "name": "start_time",
+          "type": "i64"
+        },
+        {
+          "name": "end_time",
+          "type": "i64"
+        },
+        {
+          "name": "cliff_count",
+          "type": "u8"
+        },
+        {
+          "name": "cliff_duration",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "create_single_cliff_account",
+      "discriminator": [244, 146, 220, 18, 0, 126, 192, 204],
+      "accounts": [
+        {
+          "name": "auction_creator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "writable": true
+        },
+        {
+          "name": "auction_usdc_account",
+          "writable": true
+        },
+        {
+          "name": "cliff_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [99, 108, 105, 102, 102]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              },
+              {
+                "kind": "arg",
+                "path": "cliff_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cliff_usdc_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [99, 108, 105, 102, 102, 95, 117, 115, 100, 99]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              },
+              {
+                "kind": "arg",
+                "path": "cliff_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cliff_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [99, 108, 105, 102, 102, 95, 116, 111, 107, 101, 110]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              },
+              {
+                "kind": "arg",
+                "path": "cliff_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "token_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cliff_index",
+          "type": "u8"
         }
       ]
     },
     {
       "name": "end_auction",
-      "docs": ["End auction and send usdc to creator"],
       "discriminator": [252, 110, 101, 234, 66, 104, 28, 87],
       "accounts": [
         {
@@ -181,7 +481,7 @@
           "writable": true
         },
         {
-          "name": "auction_creator",
+          "name": "signer",
           "writable": true,
           "signer": true
         },
@@ -202,8 +502,19 @@
           "writable": true
         },
         {
+          "name": "usdc_mint"
+        },
+        {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": []
@@ -244,6 +555,40 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "retrieve_cliff_tokens",
+      "discriminator": [104, 144, 235, 52, 18, 165, 49, 90],
+      "accounts": [
+        {
+          "name": "auction_creator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction"
+        },
+        {
+          "name": "cliff_account",
+          "writable": true
+        },
+        {
+          "name": "cliff_token_account",
+          "writable": true
+        },
+        {
+          "name": "creator_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [
@@ -252,8 +597,46 @@
       "discriminator": [218, 94, 247, 242, 126, 233, 131, 81]
     },
     {
+      "name": "BidderAccount",
+      "discriminator": [147, 36, 226, 65, 101, 184, 70, 222]
+    },
+    {
+      "name": "CliffAccount",
+      "discriminator": [176, 73, 57, 235, 75, 115, 182, 10]
+    },
+    {
       "name": "ProgramState",
       "discriminator": [77, 209, 137, 229, 149, 67, 167, 230]
+    }
+  ],
+  "events": [
+    {
+      "name": "AuctionCreated",
+      "discriminator": [133, 190, 194, 65, 172, 0, 70, 178]
+    },
+    {
+      "name": "AuctionEnded",
+      "discriminator": [91, 165, 139, 202, 204, 215, 92, 52]
+    },
+    {
+      "name": "CliffAccountCreated",
+      "discriminator": [125, 255, 241, 255, 37, 157, 182, 104]
+    },
+    {
+      "name": "CliffTokensRetrieved",
+      "discriminator": [222, 216, 213, 235, 79, 84, 82, 85]
+    },
+    {
+      "name": "CliffUsdcClaimed",
+      "discriminator": [194, 100, 21, 206, 76, 23, 175, 148]
+    },
+    {
+      "name": "TokensBought",
+      "discriminator": [151, 148, 173, 226, 128, 30, 249, 190]
+    },
+    {
+      "name": "UsdcClawedBack",
+      "discriminator": [71, 151, 22, 180, 125, 253, 71, 168]
     }
   ],
   "errors": [
@@ -291,6 +674,66 @@
       "code": 6006,
       "name": "InsufficientFunds",
       "msg": "Insufficient funds"
+    },
+    {
+      "code": 6007,
+      "name": "Overflow",
+      "msg": "Overflow error"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidStartTime",
+      "msg": "Invalid start time"
+    },
+    {
+      "code": 6009,
+      "name": "AuctionNotStarted",
+      "msg": "Auction has not started yet"
+    },
+    {
+      "code": 6010,
+      "name": "RefundsNotAvailable",
+      "msg": "Refunds are not available for this auction"
+    },
+    {
+      "code": 6011,
+      "name": "AuctionStillActive",
+      "msg": "Auction is still active"
+    },
+    {
+      "code": 6012,
+      "name": "InvalidAuction",
+      "msg": "Invalid auction"
+    },
+    {
+      "code": 6013,
+      "name": "RefundAlreadyClaimed",
+      "msg": "Refund has already been claimed"
+    },
+    {
+      "code": 6014,
+      "name": "TokensNotClaimable",
+      "msg": "Tokens are not claimable yet"
+    },
+    {
+      "code": 6015,
+      "name": "NoTokensToClaim",
+      "msg": "No tokens to claim"
+    },
+    {
+      "code": 6016,
+      "name": "ClawbackNotAvailable",
+      "msg": "Clawback not available - cliff has already passed"
+    },
+    {
+      "code": 6017,
+      "name": "ClawbackAlreadyClaimed",
+      "msg": "Clawback has already been claimed"
+    },
+    {
+      "code": 6018,
+      "name": "NoTokensToRetrieve",
+      "msg": "No tokens to retrieve from cliff account"
     }
   ],
   "types": [
@@ -316,16 +759,12 @@
             "type": "u64"
           },
           {
-            "name": "max_price",
+            "name": "token_price",
             "type": "u64"
           },
           {
-            "name": "min_price",
-            "type": "u64"
-          },
-          {
-            "name": "current_price",
-            "type": "u64"
+            "name": "start_time",
+            "type": "i64"
           },
           {
             "name": "end_time",
@@ -340,8 +779,244 @@
             "type": "bool"
           },
           {
+            "name": "refunds_available",
+            "type": "bool"
+          },
+          {
+            "name": "tokens_claimable",
+            "type": "bool"
+          },
+          {
+            "name": "cliff_count",
+            "type": "u8"
+          },
+          {
+            "name": "cliff_duration",
+            "type": "i64"
+          },
+          {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuctionCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "auction_id",
+            "type": "u64"
+          },
+          {
+            "name": "token_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_amount",
+            "type": "u64"
+          },
+          {
+            "name": "token_price",
+            "type": "u64"
+          },
+          {
+            "name": "start_time",
+            "type": "i64"
+          },
+          {
+            "name": "end_time",
+            "type": "i64"
+          },
+          {
+            "name": "cliff_count",
+            "type": "u8"
+          },
+          {
+            "name": "cliff_duration",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuctionEnded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_usdc_collected",
+            "type": "u64"
+          },
+          {
+            "name": "total_tokens_sold",
+            "type": "u64"
+          },
+          {
+            "name": "leftover_tokens",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BidderAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bidder",
+            "type": "pubkey"
+          },
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdc_contributed",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_in_escrow",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_claimed",
+            "type": "u64"
+          },
+          {
+            "name": "refund_claimed",
+            "type": "bool"
+          },
+          {
+            "name": "clawback_claimed",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CliffAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "cliff_index",
+            "type": "u8"
+          },
+          {
+            "name": "cliff_amount",
+            "type": "u64"
+          },
+          {
+            "name": "cliff_vesting_time",
+            "type": "i64"
+          },
+          {
+            "name": "is_claimed",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CliffAccountCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "cliff_index",
+            "type": "u8"
+          },
+          {
+            "name": "cliff_amount",
+            "type": "u64"
+          },
+          {
+            "name": "cliff_vesting_time",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CliffTokensRetrieved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "cliff_index",
+            "type": "u8"
+          },
+          {
+            "name": "tokens_retrieved",
+            "type": "u64"
+          },
+          {
+            "name": "retriever",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CliffUsdcClaimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "cliff_index",
+            "type": "u8"
+          },
+          {
+            "name": "cliff_amount",
+            "type": "u64"
+          },
+          {
+            "name": "claimer",
+            "type": "pubkey"
           }
         ]
       }
@@ -362,6 +1037,62 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TokensBought",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "tokens_bought",
+            "type": "u64"
+          },
+          {
+            "name": "usdc_paid",
+            "type": "u64"
+          },
+          {
+            "name": "total_tokens_sold",
+            "type": "u64"
+          },
+          {
+            "name": "remaining_tokens",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UsdcClawedBack",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "bidder",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdc_amount",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_returned",
+            "type": "u64"
           }
         ]
       }
