@@ -90,7 +90,7 @@ async function withFailureLogs<T>(
           sigVerify: false,
         });
         console.group("simulateTransaction logs");
-        (sim.value.logs || []).forEach((l) => console.log(l));
+        (sim.value.logs || []).forEach((l: string) => console.log(l));
         console.groupEnd();
       } catch (simErr) {
         console.warn("simulateTransaction failed", simErr);
@@ -125,6 +125,7 @@ function auctionUsdcPda(auctionPda: PublicKey, programId: PublicKey) {
     programId
   )[0];
 }
+
 function bidderAccountPda(
   buyer: PublicKey,
   auctionPda: PublicKey,
@@ -206,6 +207,7 @@ export default function Auction() {
   const [decimals, setDecimals] = useState<number | null>(null);
   const [auctionInfo, setAuctionInfo] = useState<any>(null);
   const [buyAmountStr, setBuyAmountStr] = useState("10");
+  const [cliffIndexStr, setCliffIndexStr] = useState("1");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>("");
 
@@ -684,6 +686,216 @@ export default function Auction() {
     }
   };
 
+  // -------- clawback_usdc ----------
+  const clawbackUsdc = async () => {
+    if (!publicKey || !program || !auctionPda || !mint || !programId) {
+      setResult("Connect wallet and load an existing auction.");
+      return;
+    }
+
+    const cliffIndex = parseInt(cliffIndexStr, 10);
+    if (isNaN(cliffIndex) || cliffIndex < 1) {
+      setResult("Please enter a valid cliff index (1 or higher).");
+      return;
+    }
+
+    setLoading(true);
+    setResult("");
+
+    try {
+      // Get the auction creator from the auction info
+      if (!auctionInfo?.creator) {
+        setResult(
+          "Could not find auction creator. Please refresh auction first."
+        );
+        return;
+      }
+      const auctionCreator = auctionInfo.creator as PublicKey;
+
+      // Derive all required accounts
+      const bidderAccount = bidderAccountPda(publicKey, auctionPda, programId);
+      const bidderUsdcAccount = await getAssociatedTokenAddress(
+        USDC_MINT_DEVNET,
+        publicKey
+      );
+      const bidderTokenAccount = await getAssociatedTokenAddress(
+        mint,
+        publicKey
+      );
+      const auctionUsdcAccount = auctionUsdcPda(auctionPda, programId);
+      const auctionTokenAccount = auctionTokenPda(auctionPda, programId);
+      const cliffAccount = cliffAccountPda(auctionPda, cliffIndex, programId);
+      const cliffUsdcAccount = cliffUsdcPda(auctionPda, cliffIndex, programId);
+      const cliffTokenAccount = cliffTokenPda(
+        auctionPda,
+        cliffIndex,
+        programId
+      );
+      // get bidder account details
+      const bidderAccountDetails = await connection.getAccountInfo(
+        bidderAccount
+      );
+
+      const bidderTokenAccountDetails = await connection.getAccountInfo(
+        bidderTokenAccount
+      );
+      console.log("bidderTokenAccountDetails", bidderTokenAccountDetails);
+      console.log("bidderAccountDetails", bidderAccountDetails);
+
+      // Check if required token accounts exist and create if needed
+      const preIxs: any[] = [];
+      if (!(await connection.getAccountInfo(bidderUsdcAccount))) {
+        preIxs.push(
+          createAssociatedTokenAccountInstruction(
+            publicKey,
+            bidderUsdcAccount,
+            publicKey,
+            USDC_MINT_DEVNET
+          )
+        );
+      }
+      if (!(await connection.getAccountInfo(bidderTokenAccount))) {
+        preIxs.push(
+          createAssociatedTokenAccountInstruction(
+            publicKey,
+            bidderTokenAccount,
+            publicKey,
+            mint
+          )
+        );
+      }
+
+      console.group("clawbackUsdc payload");
+      console.log("cliffIndex", cliffIndex);
+      logAccounts("accounts", {
+        bidder: publicKey,
+        auction: auctionPda,
+        auctionCreator,
+        bidderAccount,
+        bidderUsdcAccount,
+        auctionUsdcAccount,
+        auctionTokenAccount,
+        cliffAccount,
+        cliffUsdcAccount,
+        cliffTokenAccount,
+        bidderTokenAccount,
+        usdcMint: USDC_MINT_DEVNET,
+        tokenMint: mint,
+      });
+      console.groupEnd();
+
+      const method = program.methods.clawbackUsdc().accounts({
+        bidder: publicKey,
+        auction: auctionPda,
+        auctionCreator,
+        bidderAccount,
+        bidderUsdcAccount,
+        auctionUsdcAccount,
+        auctionTokenAccount,
+        cliffAccount,
+        cliffUsdcAccount,
+        cliffTokenAccount,
+        bidderTokenAccount,
+        usdcMint: USDC_MINT_DEVNET,
+        tokenMint: mint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      });
+
+      if (preIxs.length) method.preInstructions(preIxs);
+
+      const txSig = await withFailureLogs(() => method.rpc(), {
+        connection,
+        publicKey,
+        build: async () => {
+          const ix = await method.instructions();
+          const tx = new Transaction().add(ix);
+          return tx;
+        },
+      });
+
+      setResult(`USDC clawed back from cliff #${cliffIndex}.\n\nTx: ${txSig}`);
+      await refreshAuction();
+    } catch (e: any) {
+      setResult("Error: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // -------- claim_tokens ----------
+  const claimTokens = async () => {
+    if (!publicKey || !program || !auctionPda || !mint || !programId) {
+      setResult("Connect wallet and load an existing auction.");
+      return;
+    }
+
+    setLoading(true);
+    setResult("");
+
+    try {
+      // Derive all required accounts
+      const bidderAccount = bidderAccountPda(publicKey, auctionPda, programId);
+      const bidderTokenAccount = await getAssociatedTokenAddress(
+        mint,
+        publicKey
+      );
+      const auctionTokenAccount = auctionTokenPda(auctionPda, programId);
+
+      // Check if required token accounts exist and create if needed
+      const preIxs: any[] = [];
+      if (!(await connection.getAccountInfo(bidderTokenAccount))) {
+        preIxs.push(
+          createAssociatedTokenAccountInstruction(
+            publicKey,
+            bidderTokenAccount,
+            publicKey,
+            mint
+          )
+        );
+      }
+
+      console.group("claimTokens payload");
+      logAccounts("accounts", {
+        bidder: publicKey,
+        auction: auctionPda,
+        bidderAccount,
+        bidderTokenAccount,
+        auctionTokenAccount,
+        tokenMint: mint,
+      });
+      console.groupEnd();
+
+      const method = program.methods.claimTokens().accounts({
+        bidder: publicKey,
+        auction: auctionPda,
+        bidderAccount,
+        bidderTokenAccount,
+        auctionTokenAccount,
+        tokenMint: mint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      });
+
+      if (preIxs.length) method.preInstructions(preIxs);
+
+      const txSig = await withFailureLogs(() => method.rpc(), {
+        connection,
+        publicKey,
+        build: async () => {
+          const ixs = await method.instructions();
+          const tx = new Transaction().add(...ixs);
+          return tx;
+        },
+      });
+
+      setResult(`Tokens claimed successfully.\n\nTx: ${txSig}`);
+      await refreshAuction();
+    } catch (e: any) {
+      setResult("Error: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // ============ UI ============
   const prettyAuction = () => {
     if (!auctionInfo || decimals == null) return null;
@@ -1096,7 +1308,15 @@ export default function Auction() {
           >
             <h4>Create Cliff (after end)</h4>
             <button
-              onClick={() => createCliff(0)}
+              onClick={() => {
+                createCliff(0).then(() => {
+                  createCliff(1).then(() => {
+                    createCliff(2).then(() => {
+                      createCliff(3);
+                    });
+                  });
+                });
+              }}
               disabled={loading || !publicKey}
               style={{
                 padding: "10px 12px",
@@ -1110,6 +1330,87 @@ export default function Auction() {
             >
               {loading ? "Processing..." : "Create Cliff #0"}
             </button>
+          </div>
+
+          <div
+            style={{
+              marginTop: 16,
+              borderTop: "1px solid #eee",
+              paddingTop: 12,
+            }}
+          >
+            <h4>Claim Tokens</h4>
+            <p style={{ fontSize: 12, color: "#bbb", marginBottom: 8 }}>
+              Claim your purchased tokens from escrow
+            </p>
+            <button
+              onClick={claimTokens}
+              disabled={loading || !publicKey || !auctionInfo}
+              style={{
+                padding: "10px 12px",
+                backgroundColor:
+                  !loading && publicKey && auctionInfo ? "#28a745" : "#ccc",
+                color: "white",
+                border: "none",
+                borderRadius: 4,
+                cursor:
+                  !loading && publicKey && auctionInfo
+                    ? "pointer"
+                    : "not-allowed",
+                fontWeight: "bold",
+              }}
+            >
+              {loading ? "Processing..." : "Claim Tokens"}
+            </button>
+          </div>
+
+          <div
+            style={{
+              marginTop: 16,
+              borderTop: "1px solid #eee",
+              paddingTop: 12,
+            }}
+          >
+            <h4>Clawback USDC</h4>
+            <p style={{ fontSize: 12, color: "#bbb", marginBottom: 8 }}>
+              Clawback USDC from a cliff before it vests (cliff 1+ only)
+            </p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="number"
+                value={cliffIndexStr}
+                onChange={(e) => setCliffIndexStr(e.target.value)}
+                min="1"
+                max="4"
+                step="1"
+                placeholder="Cliff index"
+                style={{
+                  width: 120,
+                  padding: 8,
+                  border: "1px solid #ddd",
+                  borderRadius: 4,
+                }}
+              />
+              <button
+                onClick={clawbackUsdc}
+                disabled={loading || !publicKey || !auctionInfo}
+                style={{
+                  padding: "10px 12px",
+                  backgroundColor:
+                    !loading && publicKey && auctionInfo ? "#dc3545" : "#ccc",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor:
+                    !loading && publicKey && auctionInfo
+                      ? "pointer"
+                      : "not-allowed",
+                  fontWeight: "bold",
+                }}
+              >
+                {loading ? "Processing..." : "Clawback USDC"}
+              </button>
+            </div>
           </div>
         </div>
       )}
